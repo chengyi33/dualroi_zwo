@@ -1,0 +1,6 @@
+*.o
+*.d
+*.pgm
+*.jpg
+roi*_save_*.png
+capture_*.png
