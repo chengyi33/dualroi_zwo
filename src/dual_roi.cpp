@@ -56,6 +56,11 @@ int frameWidth = 1920;
 int frameHeight = 1080;
 int displayW = 960;
 int displayH = 540;
+bool autoExposure = false;
+int magnification = 1;  // 1x, 2x, 3x, 5x, 8x
+const int magLevels[] = {1, 2, 3, 5, 8};
+int magIndex = 0;
+int roiBaseSize = 400;  // base ROI size in sensor pixels
 
 // Button actions
 enum Actions {
@@ -64,7 +69,8 @@ enum Actions {
     ACT_MIRROR_H, ACT_MIRROR_V,
     ACT_EXP_UP, ACT_EXP_DOWN,
     ACT_GAIN_UP, ACT_GAIN_DOWN,
-    ACT_SAVE, ACT_RESET
+    ACT_SAVE, ACT_RESET,
+    ACT_AUTO_EXP, ACT_MAG_UP, ACT_MAG_DOWN
 };
 
 void handleAction(int action) {
@@ -107,12 +113,77 @@ void handleAction(int action) {
             rois[activeROI].mirrorH = false;
             rois[activeROI].mirrorV = false;
             break;
+        case ACT_AUTO_EXP:
+            autoExposure = !autoExposure;
+            break;
+        case ACT_MAG_UP:
+            if (magIndex < 4) {
+                magIndex++;
+                magnification = magLevels[magIndex];
+                // Resize both ROIs to maintain consistent pixel mapping
+                int newSize = roiBaseSize / magnification;
+                newSize = std::max(50, newSize);
+                for (int i = 0; i < 2; i++) {
+                    int cx = rois[i].rect.x + rois[i].rect.width / 2;
+                    int cy = rois[i].rect.y + rois[i].rect.height / 2;
+                    rois[i].rect.width = newSize;
+                    rois[i].rect.height = newSize;
+                    rois[i].rect.x = cx - newSize / 2;
+                    rois[i].rect.y = cy - newSize / 2;
+                }
+            }
+            break;
+        case ACT_MAG_DOWN:
+            if (magIndex > 0) {
+                magIndex--;
+                magnification = magLevels[magIndex];
+                int newSize = roiBaseSize / magnification;
+                newSize = std::max(50, newSize);
+                for (int i = 0; i < 2; i++) {
+                    int cx = rois[i].rect.x + rois[i].rect.width / 2;
+                    int cy = rois[i].rect.y + rois[i].rect.height / 2;
+                    rois[i].rect.width = newSize;
+                    rois[i].rect.height = newSize;
+                    rois[i].rect.x = cx - newSize / 2;
+                    rois[i].rect.y = cy - newSize / 2;
+                }
+            }
+            break;
+    }
+}
+
+// Auto-exposure: analyze both ROI regions and adjust exposure
+void updateAutoExposure(const cv::Mat& frame) {
+    if (!autoExposure) return;
+    
+    double totalBrightness = 0;
+    int totalPixels = 0;
+    
+    for (int i = 0; i < 2; i++) {
+        cv::Mat roi = frame(rois[i].rect);
+        cv::Mat gray;
+        cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
+        cv::Scalar mean = cv::mean(gray);
+        totalBrightness += mean[0] * roi.total();
+        totalPixels += roi.total();
+    }
+    
+    double avgBrightness = totalBrightness / totalPixels;
+    int target = 128;  // target brightness (middle gray)
+    
+    // Adjust exposure proportionally, with damping
+    if (avgBrightness < target * 0.85 && exposure < 10000000) {
+        exposure = std::min((long)(exposure * 1.15), (long)10000000);
+        ASISetControlValue(camID, ASI_EXPOSURE, exposure, ASI_FALSE);
+    } else if (avgBrightness > target * 1.15 && exposure > 100) {
+        exposure = std::max((long)(exposure * 0.85), (long)100);
+        ASISetControlValue(camID, ASI_EXPOSURE, exposure, ASI_FALSE);
     }
 }
 
 // Control panel button layout
 const int PANEL_W = 250;
-const int PANEL_H = 520;
+const int PANEL_H = 640;
 const int BTN_H = 36;
 const int BTN_W = 110;
 const int BTN_PAD = 6;
@@ -236,6 +307,35 @@ cv::Mat drawControlPanel() {
     cv::line(panel, cv::Point(10, y), cv::Point(PANEL_W - 10, y), cv::Scalar(80, 80, 80), 1);
     y += 12;
     
+    // AUTO EXPOSURE
+    cv::putText(panel, "AUTO EXPOSURE", cv::Point(10, y + 13),
+                cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(150, 150, 150), 1, cv::LINE_AA);
+    y += 22;
+    cv::Rect rAE(BTN_PAD, y, PANEL_W - BTN_PAD * 2, BTN_H);
+    drawButton(panel, rAE, autoExposure ? "Auto Exp: ON" : "Auto Exp: OFF", false, autoExposure);
+    panelButtons.push_back({rAE, ACT_AUTO_EXP});
+    y += BTN_H + 14;
+    
+    cv::line(panel, cv::Point(10, y), cv::Point(PANEL_W - 10, y), cv::Scalar(80, 80, 80), 1);
+    y += 12;
+    
+    // MAGNIFICATION
+    char magLabel[64];
+    sprintf(magLabel, "MAGNIFICATION (%dx)", magnification);
+    cv::putText(panel, magLabel, cv::Point(10, y + 13),
+                cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(150, 150, 150), 1, cv::LINE_AA);
+    y += 22;
+    cv::Rect rMU(BTN_PAD, y, BTN_W, BTN_H);
+    cv::Rect rMD(BTN_W + BTN_PAD * 2, y, BTN_W, BTN_H);
+    drawButton(panel, rMU, "Mag +", false, false);
+    drawButton(panel, rMD, "Mag -", false, false);
+    panelButtons.push_back({rMU, ACT_MAG_UP});
+    panelButtons.push_back({rMD, ACT_MAG_DOWN});
+    y += BTN_H + 14;
+    
+    cv::line(panel, cv::Point(10, y), cv::Point(PANEL_W - 10, y), cv::Scalar(80, 80, 80), 1);
+    y += 12;
+    
     // SAVE / RESET
     cv::Rect rSave(BTN_PAD, y, BTN_W, BTN_H);
     cv::Rect rReset(BTN_W + BTN_PAD * 2, y, BTN_W, BTN_H);
@@ -294,8 +394,19 @@ void onMainMouse(int event, int x, int y, int flags, void* userdata) {
             rois[activeROI].rect.x = dragOrigRect.x + (fx - dragStart.x);
             rois[activeROI].rect.y = dragOrigRect.y + (fy - dragStart.y);
         } else if (resizing) {
-            rois[activeROI].rect.width = std::max(50, dragOrigRect.width + (fx - dragStart.x));
-            rois[activeROI].rect.height = std::max(50, dragOrigRect.height + (fy - dragStart.y));
+            // Keep square and sync both ROIs to same size
+            int delta = std::max(fx - dragStart.x, fy - dragStart.y);
+            int newSize = std::max(50, dragOrigRect.width + delta);
+            rois[activeROI].rect.width = newSize;
+            rois[activeROI].rect.height = newSize;
+            // Sync the other ROI's size (keep its center position)
+            int other = 1 - activeROI;
+            int ocx = rois[other].rect.x + rois[other].rect.width / 2;
+            int ocy = rois[other].rect.y + rois[other].rect.height / 2;
+            rois[other].rect.width = newSize;
+            rois[other].rect.height = newSize;
+            rois[other].rect.x = ocx - newSize / 2;
+            rois[other].rect.y = ocy - newSize / 2;
         }
     }
     else if (event == cv::EVENT_LBUTTONUP) {
@@ -345,9 +456,11 @@ int main() {
     displayW = frameWidth / 2;
     displayH = frameHeight / 2;
 
-    // Initialize ROIs
-    rois[0] = {cv::Rect(100, 100, frameWidth / 3, frameHeight / 3), 0, false, false, cv::Scalar(0, 255, 0)};
-    rois[1] = {cv::Rect(frameWidth / 2, 100, frameWidth / 3, frameHeight / 3), 0, false, false, cv::Scalar(0, 165, 255)};
+    // Initialize ROIs — both same size for consistent comparison
+    roiBaseSize = std::min(frameWidth / 3, frameHeight / 3);
+    int initSize = roiBaseSize / magnification;
+    rois[0] = {cv::Rect(100, 100, initSize, initSize), 0, false, false, cv::Scalar(0, 255, 0)};
+    rois[1] = {cv::Rect(frameWidth / 2, 100, initSize, initSize), 0, false, false, cv::Scalar(0, 165, 255)};
 
     // Create windows
     cv::namedWindow("Main View", cv::WINDOW_NORMAL);
@@ -379,6 +492,10 @@ int main() {
         for (int i = 0; i < 2; i++)
             rois[i].rect = clampRect(rois[i].rect, frameWidth, frameHeight);
 
+        // Auto-exposure update (every 10 frames to reduce overhead)
+        if (autoExposure && frameCount % 10 == 0)
+            updateAutoExposure(frame);
+
         // Main view (scaled)
         cv::Mat display;
         cv::resize(frame, display, cv::Size(displayW, displayH));
@@ -407,13 +524,30 @@ int main() {
         cv::Mat panel = drawControlPanel();
         cv::imshow("Controls", panel);
 
-        // ROI windows
+        // ROI windows — display at consistent pixel ratio
         for (int i = 0; i < 2; i++) {
             cv::Mat roiCrop = frame(rois[i].rect).clone();
             cv::Mat transformed = applyTransform(roiCrop, rois[i].rotation, rois[i].mirrorH, rois[i].mirrorV);
+            
+            // Scale to maintain consistent pixel mapping
+            // At 1x mag, ROI pixels display 1:1
+            // At 5x mag, each sensor pixel shows as 5x5 screen pixels
+            int dispW = transformed.cols * magnification;
+            int dispH = transformed.rows * magnification;
+            // Cap display size to something reasonable
+            int maxDisp = 800;
+            if (dispW > maxDisp || dispH > maxDisp) {
+                double scale = (double)maxDisp / std::max(dispW, dispH);
+                dispW = (int)(dispW * scale);
+                dispH = (int)(dispH * scale);
+            }
+            
+            cv::Mat displayed;
+            cv::resize(transformed, displayed, cv::Size(dispW, dispH), 0, 0, cv::INTER_NEAREST);
+            
             char winName[16];
             sprintf(winName, "ROI %d", i + 1);
-            cv::imshow(winName, transformed);
+            cv::imshow(winName, displayed);
         }
 
         // Save
@@ -440,6 +574,9 @@ int main() {
             case 's': case 'S': handleAction(ACT_SAVE); break;
             case '+': case '=': handleAction(ACT_EXP_UP); break;
             case '-': case '_': handleAction(ACT_EXP_DOWN); break;
+            case 'a': case 'A': handleAction(ACT_AUTO_EXP); break;
+            case ']': handleAction(ACT_MAG_UP); break;
+            case '[': handleAction(ACT_MAG_DOWN); break;
         }
     }
 
