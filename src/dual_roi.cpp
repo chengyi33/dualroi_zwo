@@ -518,7 +518,6 @@ int main() {
             cv::rectangle(display, cv::Point(br.x - 8, br.y - 8), br, rois[i].color, -1);
         }
         
-        cv::copyMakeBorder(display, display, 2, 2, 2, 2, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
         cv::imshow("Main View", display);
 
         // Control panel
@@ -545,9 +544,6 @@ int main() {
             
             cv::Mat displayed;
             cv::resize(transformed, displayed, cv::Size(dispW, dispH), 0, 0, cv::INTER_NEAREST);
-            
-            // Add thin black border for visibility
-            cv::copyMakeBorder(displayed, displayed, 2, 2, 2, 2, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
             
             char winName[16];
             sprintf(winName, "ROI %d", i + 1);
